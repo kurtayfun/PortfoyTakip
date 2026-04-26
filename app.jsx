@@ -358,3 +358,6 @@ function SellModal({ asset, onSell, onClose }) {
     </div>
   );
 }
+// app.jsx dosyasının en altına ekle
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<PortfolioApp />);
