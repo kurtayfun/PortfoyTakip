@@ -24,7 +24,7 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2);
 // ============================================================
 // ANA UYGULAMA BİLEŞENİ
 // ============================================================
-export default function PortfolioApp() {
+{
   const [holdings, setHoldings] = useState(() => DB.get(STORAGE_KEYS.holdings));
   const [history, setHistory] = useState(() => DB.get(STORAGE_KEYS.history));
   const [prices, setPrices] = useState({});
