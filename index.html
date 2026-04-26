@@ -3,15 +3,253 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Portföy Takip Uygulaması</title>
+    <title>Tayfun Portföy</title>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #0f172a; color: #f1f5f9; }
+        input, select { color-scheme: dark; }
+    </style>
 </head>
 <body>
     <div id="root"></div>
 
-    <script type="text/babel" src="app.jsx"></script> 
+    <script type="text/babel">
+        // ============================================================
+        // AYARLAR - GOOGLE SCRIPT URL'Nİ BURAYA YAPIŞTIR
+        // ============================================================
+        const API_URL = "https://script.google.com/macros/s/AKfycbzM5TkuQXUqPJgNLVlNBA2XXA0YFiRVvYlH9oXumB28ulVQaCnKm43l6uCnZgB6WCXS/exec"; 
+
+        const STORAGE_KEYS = { holdings: "ptf_holdings", history: "ptf_history" };
+        const DB = {
+            get: (key) => JSON.parse(localStorage.getItem(key)) || [],
+            set: (key, val) => localStorage.setItem(key, JSON.stringify(val))
+        };
+
+        const fmt = (n, d = 2) => n == null ? "—" : Number(n).toLocaleString("tr-TR", { minimumFractionDigits: d, maximumFractionDigits: d });
+        const fmtTL = (n) => n == null ? "—" : fmt(n) + " ₺";
+        const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2);
+
+        function PortfolioApp() {
+            const [holdings, setHoldings] = React.useState(() => DB.get(STORAGE_KEYS.holdings));
+            const [history, setHistory] = React.useState(() => DB.get(STORAGE_KEYS.history));
+            const [prices, setPrices] = React.useState({});
+            const [loading, setLoading] = React.useState(false);
+            const [activeTab, setActiveTab] = React.useState("dashboard");
+
+            const [isAddModalOpen, setIsAddModalOpen] = React.useState(false);
+            const [editingAsset, setEditingAsset] = React.useState(null);
+            const [sellingAsset, setSellingAsset] = React.useState(null);
+            const [confirmDelete, setConfirmDelete] = React.useState(null);
+
+            const fetchPrices = async () => {
+                if (API_URL.includes("BURAYA_GOOGLE")) return;
+                setLoading(true);
+                try {
+                    const symbols = holdings.filter(h => h.type === "BIST").map(h => h.symbol).join(",");
+                    const res = await fetch(`${API_URL}?symbols=${symbols}`);
+                    const data = await res.json();
+                    if (data && data.prices) setPrices(data.prices);
+                } catch (err) {
+                    console.error("Fiyat çekme hatası:", err);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            React.useEffect(() => {
+                fetchPrices();
+                const interval = setInterval(fetchPrices, 5 * 60 * 1000);
+                return () => clearInterval(interval);
+            }, [holdings.length]);
+
+            const saveAsset = (formData) => {
+                let updated;
+                if (editingAsset) {
+                    updated = holdings.map(h => h.id === editingAsset.id ? { 
+                        ...h, ...formData, 
+                        lots: [{ ...h.lots[0], qty: Number(formData.qty), remaining: Number(formData.qty), price: Number(formData.price), date: formData.date }] 
+                    } : h);
+                } else {
+                    updated = [...holdings, { id: uid(), ...formData, lots: [{ id: uid(), qty: Number(formData.qty), remaining: Number(formData.qty), price: Number(formData.price), date: formData.date }] }];
+                }
+                setHoldings(updated);
+                DB.set(STORAGE_KEYS.holdings, updated);
+                setIsAddModalOpen(false);
+                setEditingAsset(null);
+            };
+
+            const deleteAsset = (id) => {
+                const updated = holdings.filter(h => h.id !== id);
+                setHoldings(updated);
+                DB.set(STORAGE_KEYS.holdings, updated);
+                setConfirmDelete(null);
+            };
+
+            const sellAsset = (holding, sellQty, sellPrice, sellDate) => {
+                let remainingToSell = Number(sellQty);
+                const newHoldings = [...holdings];
+                const assetIndex = newHoldings.findIndex(h => h.id === holding.id);
+                const targetAsset = { ...newHoldings[assetIndex] };
+                const soldLotsInfo = [];
+
+                targetAsset.lots.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+                for (let lot of targetAsset.lots) {
+                    if (remainingToSell <= 0) break;
+                    if (lot.remaining <= 0) continue;
+                    const taken = Math.min(lot.remaining, remainingToSell);
+                    lot.remaining -= taken;
+                    remainingToSell -= taken;
+                    soldLotsInfo.push({ symbol: targetAsset.symbol, qty: taken, buyPrice: lot.price, sellPrice: Number(sellPrice), date: sellDate, pnl: (Number(sellPrice) - lot.price) * taken });
+                }
+
+                setHistory([...soldLotsInfo, ...history]);
+                DB.set(STORAGE_KEYS.history, [...soldLotsInfo, ...history]);
+
+                if (targetAsset.lots.reduce((s, l) => s + l.remaining, 0) <= 0) {
+                    newHoldings.splice(assetIndex, 1);
+                } else {
+                    newHoldings[assetIndex] = targetAsset;
+                }
+                setHoldings(newHoldings);
+                DB.set(STORAGE_KEYS.holdings, newHoldings);
+                setSellingAsset(null);
+            };
+
+            return (
+                <div className="max-w-md mx-auto bg-[#0f172a] min-h-screen relative pb-20 shadow-xl">
+                    <div className="p-5 flex justify-between items-center border-b border-slate-800">
+                        <h1 className="text-xl font-bold text-blue-400">Portföyüm</h1>
+                        <button onClick={fetchPrices} className="text-xs bg-slate-800 px-3 py-2 rounded-lg">
+                            {loading ? "..." : "🔄 Güncelle"}
+                        </button>
+                    </div>
+
+                    {activeTab === "dashboard" && (
+                        <div className="p-5">
+                            <div className="bg-slate-800 p-6 rounded-2xl border border-slate-700 mb-4">
+                                <p className="text-slate-400 text-sm">Toplam Değer</p>
+                                <h2 className="text-3xl font-bold mt-1">
+                                    {fmtTL(holdings.reduce((sum, h) => sum + ((prices[h.symbol] || h.lots[0].price) * h.lots.reduce((s, l) => s + l.remaining, 0)), 0))}
+                                </h2>
+                            </div>
+                        </div>
+                    )}
+
+                    {activeTab === "assets" && (
+                        <div className="p-5">
+                            <button onClick={() => {setEditingAsset(null); setIsAddModalOpen(true)}} className="w-full bg-blue-600 py-3 rounded-xl font-bold mb-5">+ Yeni Varlık</button>
+                            {holdings.map(h => (
+                                <div key={h.id} className="bg-slate-800 p-4 rounded-xl mb-3 border border-slate-700">
+                                    <div className="flex justify-between items-start">
+                                        <div>
+                                            <span className="font-bold text-lg">{h.symbol}</span>
+                                            <p className="text-xs text-slate-400">{fmt(h.lots.reduce((s,l)=>s+l.remaining,0))} Adet</p>
+                                        </div>
+                                        <div className="text-right">
+                                            <p className="font-bold">{fmtTL((prices[h.symbol] || h.lots[0].price) * h.lots.reduce((s,l)=>s+l.remaining,0))}</p>
+                                            <p className="text-[10px] text-slate-500">Birim: {fmtTL(prices[h.symbol] || h.lots[0].price)}</p>
+                                        </div>
+                                    </div>
+                                    <div className="flex gap-2 mt-4">
+                                        <button onClick={()=>setSellingAsset(h)} className="flex-1 bg-green-700 text-xs py-2 rounded-md">Sat</button>
+                                        <button onClick={()=>{setEditingAsset(h); setIsAddModalOpen(true)}} className="flex-1 bg-amber-600 text-xs py-2 rounded-md">Düzenle</button>
+                                        <button onClick={()=>setConfirmDelete(h)} className="flex-1 bg-red-800 text-xs py-2 rounded-md">Sil</button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
+                    {activeTab === "history" && (
+                        <div className="p-5">
+                            <h2 className="mb-4 font-bold">Satış Geçmişi</h2>
+                            {history.map((item, idx) => (
+                                <div key={idx} className="border-b border-slate-800 py-3 flex justify-between">
+                                    <div>
+                                        <p className="font-bold">{item.symbol}</p>
+                                        <p className="text-[10px] text-slate-500">{item.date} | {item.qty} adet</p>
+                                    </div>
+                                    <p className={item.pnl >= 0 ? "text-green-500" : "text-red-500"}>{fmtTL(item.pnl)}</p>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
+                    <div className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-slate-900 border-t border-slate-800 flex p-2">
+                        <button onClick={()=>setActiveTab("dashboard")} className={`flex-1 py-2 text-xs ${activeTab==="dashboard"?"text-blue-500":"text-slate-500"}`}>Dashboard</button>
+                        <button onClick={()=>setActiveTab("assets")} className={`flex-1 py-2 text-xs ${activeTab==="assets"?"text-blue-500":"text-slate-500"}`}>Varlıklar</button>
+                        <button onClick={()=>setActiveTab("history")} className={`flex-1 py-2 text-xs ${activeTab==="history"?"text-blue-500":"text-slate-500"}`}>Geçmiş</button>
+                    </div>
+
+                    {isAddModalOpen && <AddModal initial={editingAsset} onSave={saveAsset} onClose={()=>setIsAddModalOpen(false)} />}
+                    {sellingAsset && <SellModal asset={sellingAsset} onSell={sellAsset} onClose={()=>setSellingAsset(null)} />}
+                    {confirmDelete && <DeleteModal asset={confirmDelete} onConfirm={()=>deleteAsset(confirmDelete.id)} onCancel={()=>setConfirmDelete(null)} />}
+                </div>
+            );
+        }
+
+        // --- ALT BİLEŞENLER ---
+        function AddModal({initial, onSave, onClose}) {
+            const [f, setF] = React.useState({ type: "BIST", symbol: "", qty: "", price: "", date: new Date().toISOString().split("T")[0] });
+            React.useEffect(() => { if(initial) setF({ type: initial.type, symbol: initial.symbol, qty: initial.lots[0].remaining, price: initial.lots[0].price, date: initial.lots[0].date }); }, [initial]);
+            return (
+                <div className="fixed inset-0 bg-black/80 flex items-end z-50">
+                    <div className="bg-slate-900 w-full p-6 rounded-t-3xl border-t border-slate-700">
+                        <h3 className="font-bold text-lg mb-4">{initial?"Düzenle":"Yeni Varlık"}</h3>
+                        <select value={f.type} onChange={e=>setF({...f, type: e.target.value})} className="w-full bg-slate-800 p-3 rounded-lg mb-3">
+                            <option value="BIST">BIST Hisse</option>
+                            <option value="DOVIZ">Döviz</option>
+                            <option value="ALTIN">Altın</option>
+                        </select>
+                        <input placeholder="Sembol (THYAO, USD...)" value={f.symbol} onChange={e=>setF({...f, symbol: e.target.value.toUpperCase()})} className="w-full bg-slate-800 p-3 rounded-lg mb-3" />
+                        <div className="flex gap-3 mb-3">
+                            <input placeholder="Miktar" type="number" value={f.qty} onChange={e=>setF({...f, qty: e.target.value})} className="flex-1 bg-slate-800 p-3 rounded-lg" />
+                            <input placeholder="Fiyat" type="number" value={f.price} onChange={e=>setF({...f, price: e.target.value})} className="flex-1 bg-slate-800 p-3 rounded-lg" />
+                        </div>
+                        <button onClick={()=>onSave(f)} className="w-full bg-blue-600 py-3 rounded-xl font-bold">Kaydet</button>
+                        <button onClick={onClose} className="w-full py-3 text-slate-500 text-sm">Vazgeç</button>
+                    </div>
+                </div>
+            );
+        }
+
+        function SellModal({asset, onSell, onClose}) {
+            const [q, setQ] = React.useState("");
+            const [p, setP] = React.useState("");
+            return (
+                <div className="fixed inset-0 bg-black/80 flex items-end z-50">
+                    <div className="bg-slate-900 w-full p-6 rounded-t-3xl border-t border-slate-700">
+                        <h3 className="font-bold text-lg mb-2">{asset.symbol} Satışı</h3>
+                        <input placeholder="Miktar" type="number" value={q} onChange={e=>setQ(e.target.value)} className="w-full bg-slate-800 p-3 rounded-lg mb-3" />
+                        <input placeholder="Satış Fiyatı" type="number" value={p} onChange={e=>setP(e.target.value)} className="w-full bg-slate-800 p-3 rounded-lg mb-4" />
+                        <button onClick={()=>onSell(asset, q, p, new Date().toISOString().split("T")[0])} className="w-full bg-green-600 py-3 rounded-xl font-bold">Satışı Onayla</button>
+                        <button onClick={onClose} className="w-full py-3 text-slate-500 text-sm">Vazgeç</button>
+                    </div>
+                </div>
+            );
+        }
+
+        function DeleteModal({asset, onConfirm, onCancel}) {
+            return (
+                <div className="fixed inset-0 bg-black/80 flex items-center p-6 z-50">
+                    <div className="bg-slate-900 w-full p-6 rounded-2xl border border-red-900/30 text-center">
+                        <p className="mb-6">{asset.symbol} kaydını silmek istiyor musun?</p>
+                        <div className="flex gap-3">
+                            <button onClick={onConfirm} className="flex-1 bg-red-700 py-3 rounded-xl font-bold">Sil</button>
+                            <button onClick={onCancel} className="flex-1 bg-slate-700 py-3 rounded-xl font-bold">Vazgeç</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<PortfolioApp />);
+    </script>
 </body>
 </html>
 
